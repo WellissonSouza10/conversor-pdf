@@ -13,8 +13,7 @@ st.set_page_config(
 st.title("📄 Conversor de Pedidos PDF -> Excel (Com Base Campo Doce)")
 st.markdown(
     "1. Faça o upload do **PDF do Pedido (Consinco)**.\n2. Faça o upload da"
-    " sua **Base - Campo Doce (.xlsx ou .csv)** para cruzar com a coluna"
-    " **CÓDIGO CD**."
+    " sua **Base - Campo Doce** para cruzar os códigos corretamente."
 )
 
 # 1. Carregar o PDF do Pedido
@@ -58,7 +57,7 @@ if uploaded_pdf is not None:
       df_pedido = pd.DataFrame(dados_tabela)
       df_pedido = df_pedido.drop_duplicates()
 
-      # Se a Base - Campo Doce foi carregada, efetuamos o PROCV pela coluna 'CÓDIGO CD'
+      # Se a Base - Campo Doce foi carregada, efetuamos o PROCV correto
       if uploaded_aux is not None:
         if uploaded_aux.name.endswith(".csv"):
           df_aux = pd.read_csv(uploaded_aux)
@@ -66,38 +65,20 @@ if uploaded_pdf is not None:
           df_aux = pd.read_excel(uploaded_aux)
 
         st.success("Base - Campo Doce carregada com sucesso!")
-        st.subheader("Pré-visualização da Base Auxiliar:")
-        st.dataframe(df_aux.head(3), use_container_width=True)
 
         try:
-          df_pedido["Código (SEQ)"] = df_pedido["Código (SEQ)"].astype(str)
+          # Limpeza e padronização dos códigos para texto (removendo casas decimais se houver)
+          df_pedido["Código (SEQ)"] = (
+              df_pedido["Código (SEQ)"].astype(str).str.strip()
+          )
 
-          # Procura especificamente pela coluna 'CÓDIGO CD' (ou variações) na base auxiliar
-          col_aux_chave = None
-          for col in df_aux.columns:
-            col_limpa = str(col).strip().upper()
-            if "CÓDIGO CD" in col_limpa or "CODIGO CD" in col_limpa:
-              col_aux_chave = col
-              break
+          # A coluna de chave na base auxiliar é a primeira coluna (geralmente chamada 'Produto')
+          col_aux_chave = df_aux.columns[0]
+          df_aux[col_aux_chave] = (
+              df_aux[col_aux_chave].astype(str).str.split(".").str[0].str.strip()
+          )
 
-          # Se não encontrar exatamente, procura por colunas que contenham "CD" ou "SEQ"
-          if not col_aux_chave:
-            for col in df_aux.columns:
-              if any(
-                  termo in str(col).upper() for termo in ["CD", "SEQ", "CÓDIGO"]
-              ):
-                col_aux_chave = col
-                break
-
-          # Fallback final para a 3ª coluna (onde o CÓDIGO CD costuma estar na imagem)
-          if not col_aux_chave and len(df_aux.columns) >= 3:
-            col_aux_chave = df_aux.columns[2]
-          elif not col_aux_chave:
-            col_aux_chave = df_aux.columns[0]
-
-          df_aux[col_aux_chave] = df_aux[col_aux_chave].astype(str)
-
-          # Realiza o PROCV (Left Merge) utilizando o Código do PDF e a coluna CÓDIGO CD da base
+          # Realiza o PROCV exato (Left Merge)
           df_final = pd.merge(
               df_pedido,
               df_aux,
@@ -106,26 +87,23 @@ if uploaded_pdf is not None:
               how="left",
           )
           st.success(
-              f"Cruzamento efetuado com sucesso usando a coluna '{col_aux_chave}'"
-              " da Base Campo Doce!"
+              "Cruzamento efetuado com sucesso utilizando a coluna de códigos da"
+              f" base ('{col_aux_chave}')!"
           )
         except Exception as e:
           df_final = df_pedido
-          st.warning(
-              f"Erro ao cruzar com a base auxiliar: {e}. A mostrar apenas os"
-              " dados do PDF."
-          )
+          st.warning(f"Erro ao cruzar os dados: {e}")
       else:
         df_final = df_pedido
         st.info(
-            "💡 Dica: Carregue o ficheiro da **Base - Campo Doce** para cruzar"
-            " com os códigos CD automaticamente."
+            "💡 Carregue a **Base - Campo Doce** para preencher o CÓDIGO CD e as"
+            " demais colunas automaticamente."
         )
 
       st.subheader("Resultado Final:")
       st.dataframe(df_final, use_container_width=True)
 
-      # Botão para descarregar o Excel final
+      # Botão de Download do Excel completo
       output = io.BytesIO()
       with pd.ExcelWriter(output, engine="openpyxl") as writer:
         df_final.to_excel(writer, index=False, header=True)
@@ -134,7 +112,7 @@ if uploaded_pdf is not None:
       st.download_button(
           label="📥 Descarregar Planilha Completa (.xlsx)",
           data=excel_data,
-          file_name="pedido_com_codigo_cd.xlsx",
+          file_name="pedido_campo_doce_final.xlsx",
           mime=(
               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
           ),
