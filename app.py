@@ -5,39 +5,41 @@ import pdfplumber
 import streamlit as st
 
 st.set_page_config(
-    page_title="Conversor de Pedidos para Excel", page_icon="📊", layout="wide"
+    page_title="Conversor de Pedidos - Campo Doce",
+    page_icon="📊",
+    layout="wide",
 )
 
-st.title("📄 Conversor de Pedidos PDF -> Excel (Focado em Código e Qtde)")
+st.title("📄 Conversor de Pedidos PDF -> Excel (Com Base Campo Doce)")
 st.markdown(
-    "Faça o upload do PDF. O sistema vai extrair o **Código (SEQ)** e a"
-    " **Quantidade** com base no layout do Consinco."
+    "1. Faça o upload do **PDF do Pedido (Consinco)**.\n2. Faça o upload da"
+    " sua **Base - Campo Doce (.xlsx ou .csv)** para cruzar com a coluna"
+    " **CÓDIGO CD**."
 )
 
-uploaded_file = st.file_uploader(
+# 1. Carregar o PDF do Pedido
+uploaded_pdf = st.file_uploader(
     "Selecione o ficheiro PDF do pedido", type=["pdf"]
 )
 
-if uploaded_file is not None:
-  with st.spinner("A ler o texto e a extrair os produtos..."):
-    texto_completo = ""
+# 2. Carregar a Base de Dados Auxiliar
+uploaded_aux = st.file_uploader(
+    "Selecione a base de códigos (Base - Campo Doce)", type=["xlsx", "csv"]
+)
 
-    # Lê o texto de todas as páginas do PDF
-    with pdfplumber.open(uploaded_file) as pdf:
+if uploaded_pdf is not None:
+  with st.spinner("A processar o PDF..."):
+    texto_completo = ""
+    with pdfplumber.open(uploaded_pdf) as pdf:
       for pagina in pdf.pages:
         txt = pagina.extract_text()
         if txt:
           texto_completo += txt + "\n"
 
-    # Quebra o texto por linhas para processamento individual
     linhas = texto_completo.split("\n")
     dados_tabela = []
 
-    # Expressão regular para detetar linhas de produtos do Consinco:
-    # Começa com um código de 4 a 8 dígitos, seguido do nome e da quantidade no formato X,XX ou XX,XX
     for linha in linhas:
-      # Exemplo de linha do PDF: "98967MASSA TALHARIM MEZZANI 500G CX 12 3,00 137,8100 413,43..."
-      # Procuramos o código no início e a quantidade logo após as unidades de embalagem (CX, UN, PC)
       match = re.search(
           r"^(\d{4,8})\s*(.*?)\s+(?:CX|UN|PC|KG|FD)\s*\d*\s+(\d+[\.,]\d{2})",
           linha.strip(),
@@ -48,75 +50,94 @@ if uploaded_file is not None:
         quantidade = match.group(3)
         dados_tabela.append({
             "Código (SEQ)": codigo,
-            "Descrição do Produto": descricao,
+            "Descrição do PDF": descricao,
             "Qtde": quantidade,
         })
-      else:
-        # Padrão alternativo caso o espaçamento varie ligeiramente
-        match_alt = re.search(r"^(\d{4,8})\s+(.*)", linha.strip())
-        if match_alt:
-          # Tenta isolar números que pareçam quantidades na mesma linha
-          partes = linha.split()
-          if len(partes) >= 4:
-            # O código é o primeiro elemento e a quantidade costuma estar antes dos valores monetários
-            codigo = partes[0]
-            if len(codigo) >= 4 and codigo.isdigit():
-              # Procura um valor decimal curto na linha que sirva de quantidade
-              for p in partes:
-                if (
-                    "," in p
-                    and len(p) <= 6
-                    and p.replace(",", "").isdigit()
-                    and p != codigo
-                ):
-                  quantidade = p
-                  # Descrição fica no meio
-                  desc = " ".join(
-                      [
-                          x
-                          for x in partes[1:]
-                          if x != p
-                          and not "137" in x
-                          and not "247" in x
-                          and not "0,00" in x
-                      ]
-                  )
-                  dados_tabela.append({
-                      "Código (SEQ)": codigo,
-                      "Descrição do Produto": desc[:50],
-                      "Qtde": quantidade,
-                  })
-                  break
 
-    # Se a extração automática por linhas avançadas trouxer dados, geramos o DataFrame
     if dados_tabela:
-      df = pd.DataFrame(dados_tabela)
-      # Remove duplicados caso o regex apanhe a mesma linha duas vezes
-      df = df.drop_duplicates()
+      df_pedido = pd.DataFrame(dados_tabela)
+      df_pedido = df_pedido.drop_duplicates()
 
-      st.success(
-          f"Foram extraídos {len(df)} itens com sucesso do documento!"
-      )
-      st.dataframe(df, use_container_width=True)
+      # Se a Base - Campo Doce foi carregada, efetuamos o PROCV pela coluna 'CÓDIGO CD'
+      if uploaded_aux is not None:
+        if uploaded_aux.name.endswith(".csv"):
+          df_aux = pd.read_csv(uploaded_aux)
+        else:
+          df_aux = pd.read_excel(uploaded_aux)
 
-      # Botão para descarregar o Excel limpo
+        st.success("Base - Campo Doce carregada com sucesso!")
+        st.subheader("Pré-visualização da Base Auxiliar:")
+        st.dataframe(df_aux.head(3), use_container_width=True)
+
+        try:
+          df_pedido["Código (SEQ)"] = df_pedido["Código (SEQ)"].astype(str)
+
+          # Procura especificamente pela coluna 'CÓDIGO CD' (ou variações) na base auxiliar
+          col_aux_chave = None
+          for col in df_aux.columns:
+            col_limpa = str(col).strip().upper()
+            if "CÓDIGO CD" in col_limpa or "CODIGO CD" in col_limpa:
+              col_aux_chave = col
+              break
+
+          # Se não encontrar exatamente, procura por colunas que contenham "CD" ou "SEQ"
+          if not col_aux_chave:
+            for col in df_aux.columns:
+              if any(
+                  termo in str(col).upper() for termo in ["CD", "SEQ", "CÓDIGO"]
+              ):
+                col_aux_chave = col
+                break
+
+          # Fallback final para a 3ª coluna (onde o CÓDIGO CD costuma estar na imagem)
+          if not col_aux_chave and len(df_aux.columns) >= 3:
+            col_aux_chave = df_aux.columns[2]
+          elif not col_aux_chave:
+            col_aux_chave = df_aux.columns[0]
+
+          df_aux[col_aux_chave] = df_aux[col_aux_chave].astype(str)
+
+          # Realiza o PROCV (Left Merge) utilizando o Código do PDF e a coluna CÓDIGO CD da base
+          df_final = pd.merge(
+              df_pedido,
+              df_aux,
+              left_on="Código (SEQ)",
+              right_on=col_aux_chave,
+              how="left",
+          )
+          st.success(
+              f"Cruzamento efetuado com sucesso usando a coluna '{col_aux_chave}'"
+              " da Base Campo Doce!"
+          )
+        except Exception as e:
+          df_final = df_pedido
+          st.warning(
+              f"Erro ao cruzar com a base auxiliar: {e}. A mostrar apenas os"
+              " dados do PDF."
+          )
+      else:
+        df_final = df_pedido
+        st.info(
+            "💡 Dica: Carregue o ficheiro da **Base - Campo Doce** para cruzar"
+            " com os códigos CD automaticamente."
+        )
+
+      st.subheader("Resultado Final:")
+      st.dataframe(df_final, use_container_width=True)
+
+      # Botão para descarregar o Excel final
       output = io.BytesIO()
       with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, header=True)
+        df_final.to_excel(writer, index=False, header=True)
       excel_data = output.getvalue()
 
       st.download_button(
-          label="📥 Descarregar Planilha Filtrada em Excel (.xlsx)",
+          label="📥 Descarregar Planilha Completa (.xlsx)",
           data=excel_data,
-          file_name="pedido_seq_qtde.xlsx",
+          file_name="pedido_com_codigo_cd.xlsx",
           mime=(
               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
           ),
       )
     else:
-      # Plano de contingência: mostra o texto bruto para conferência se o formato exato mudar
-      st.warning(
-          "Não foi possível aplicar o filtro automático exate para este"
-          " layout. A apresentar o texto extraído:"
-      )
-      st.text_area("Texto Bruto do PDF", texto_completo, height=300)
+      st.error("Não foram encontrados itens válidos no PDF.")
